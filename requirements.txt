@@ -1,9 +1,10 @@
-fastapi
+fastapi[all]
 uvicorn
 sqlalchemy
 psycopg2-binary
 pydantic[email]
 bcrypt
 python-dotenv
+
 
 
