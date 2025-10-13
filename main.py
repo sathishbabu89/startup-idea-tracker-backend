@@ -21,12 +21,18 @@ def get_db():
 
 app = FastAPI()
 
+# CORS setup
+origins = [
+    "http://localhost:3000",                    # local React dev
+    "https://startupidea-hotocloud.web.app"    # Firebase hosted React app
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React app
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
 # Temporary local in-memory database
@@ -72,4 +78,5 @@ def login_user(user: User, db: Session = Depends(get_db)):
 @app.get("/users")
 def get_all_users(db: Session = Depends(get_db)):
     users = db.query(UserDB).all()
+
     return users
