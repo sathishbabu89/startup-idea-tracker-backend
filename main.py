@@ -1,17 +1,27 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from models import UserDB, User
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from database import SessionLocal, engine
-from typing import List
+from models import UserDB, User
+from database import SessionLocal, engine, Base
 import bcrypt
-from database import Base, engine
+import os
+from dotenv import load_dotenv
+from pydantic import BaseModel
+
+# ----------------------------------------
+# 1. Setup
+# ----------------------------------------
+load_dotenv()
+
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
 Base.metadata.create_all(bind=engine)
 
-# Create DB tables
-UserDB.metadata.create_all(bind=engine)
-
-# Dependency - create and close session per request
+# Database dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -19,12 +29,14 @@ def get_db():
     finally:
         db.close()
 
+# ----------------------------------------
+# 2. FastAPI App + CORS
+# ----------------------------------------
 app = FastAPI()
 
-# CORS setup
 origins = [
-    "http://localhost:3000",                    # local React dev
-    "https://startupidea-hotocloud.web.app"    # Firebase hosted React app
+    "http://localhost:3000",
+    "https://startupidea-hotocloud.web.app"
 ]
 
 app.add_middleware(
@@ -32,12 +44,38 @@ app.add_middleware(
     allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
-# Temporary local in-memory database
-fake_db = {}
+# ----------------------------------------
+# 3. JWT Helpers
+# ----------------------------------------
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+def verify_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return email
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+# ----------------------------------------
+# 4. Request Models
+# ----------------------------------------
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+# ----------------------------------------
+# 5. Routes
+# ----------------------------------------
 @app.get("/")
 def root():
     return {"message": "FastAPI backend is running 🚀"}
@@ -46,12 +84,9 @@ def root():
 def register_user(user: User, db: Session = Depends(get_db)):
     existing_user = db.query(UserDB).filter(UserDB.email == user.email).first()
     if existing_user:
-        return {"message": "User already exists!"}
+        raise HTTPException(status_code=400, detail="User already exists!")
 
-    # Hash the password
     hashed_password = bcrypt.hashpw(user.password.encode('utf-8'), bcrypt.gensalt())
-
-    # Save user with hashed password
     new_user = UserDB(
         username=user.username,
         email=user.email,
@@ -60,23 +95,31 @@ def register_user(user: User, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-
     return {"message": f"User {new_user.username} registered successfully!"}
 
+# ✅ UPDATED LOGIN ENDPOINT (accepts JSON)
 @app.post("/login")
-def login_user(user: User, db: Session = Depends(get_db)):
-    existing_user = db.query(UserDB).filter(UserDB.email == user.email).first()
-    if not existing_user:
-        return {"message": "Invalid email or password"}
+def login_user(request: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(UserDB).filter(UserDB.email == request.email).first()
+    if not user or not bcrypt.checkpw(request.password.encode('utf-8'), user.password.encode('utf-8')):
+        raise HTTPException(status_code=400, detail="Invalid email or password")
 
-    # Verify hashed password
-    if bcrypt.checkpw(user.password.encode('utf-8'), existing_user.password.encode('utf-8')):
-        return {"message": f"Login successful! Welcome {existing_user.username}"}
-    else:
-        return {"message": "Invalid email or password"}
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+
+    return {"access_token": token, "token_type": "bearer"}
 
 @app.get("/users")
 def get_all_users(db: Session = Depends(get_db)):
     users = db.query(UserDB).all()
-
     return users
+
+@app.get("/me")
+def read_me(token: str, db: Session = Depends(get_db)):
+    email = verify_token(token)
+    user = db.query(UserDB).filter(UserDB.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"username": user.username, "email": user.email}
