@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
@@ -117,9 +117,15 @@ def get_all_users(db: Session = Depends(get_db)):
     return users
 
 @app.get("/me")
-def read_me(token: str, db: Session = Depends(get_db)):
+def read_me(authorization: str = Header(None), db: Session = Depends(get_db)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token missing")
+    
+    token = authorization.split(" ")[1]
     email = verify_token(token)
+    
     user = db.query(UserDB).filter(UserDB.email == email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    
     return {"username": user.username, "email": user.email}
